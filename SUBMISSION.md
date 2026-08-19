@@ -49,6 +49,12 @@ components use, so declaration and behavior cannot drift.
 real server on a random port and speak plain HTTP), plus a manual curl smoke
 test against the packaged jar.
 
+The same contract is also asserted against the **deployed** instance by a
+Postman/Newman conformance suite in `postman/` — 26 requests, 72 assertions,
+runnable with one command (`npx newman run … --env-var token=…`). Tests that
+pass in-process can still be defeated by a proxy, a reverse-proxy buffering an
+SSE stream, or a stale image, so the deployment is verified over the wire too.
+
 - **Chunking** — unit tests pin the greedy packing (small files share a chunk,
   60+60+2 KiB → 2 chunks, oversized file → its own chunk, order preserved).
   An integration test submits a real ~114 KiB three-file diff and asserts

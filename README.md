@@ -69,6 +69,20 @@ and verify the full contract: lifecycle, auth, error taxonomy, chunk counts
 with identical findings, cache hits, idempotency replay/conflict, byte-identical
 SSE replay, 429 + `Retry-After`, 4+1 concurrency and llm graceful failure.
 
+### Verifying a running instance
+
+`postman/` holds a conformance suite that asserts the same contract against a
+deployed service — 26 requests, 72 assertions, no import required:
+
+```bash
+npx newman run postman/AI-Diff-Review-Service.postman_collection.json --env-var baseUrl=http://localhost:8080 --env-var token=YOUR_TOKEN
+```
+
+It covers the behaviours that a single request cannot show: chunk boundaries on
+an 87 KiB diff, cache miss then hit with deep-equal findings, idempotency replay
+and conflict, byte-identical SSE replay, the full error taxonomy including the
+1 MiB guard, and llm graceful degradation. See [postman/README.md](postman/README.md).
+
 ## Configuration
 
 | Env var | Default | Purpose |
