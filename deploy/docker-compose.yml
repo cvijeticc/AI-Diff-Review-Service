@@ -1,0 +1,29 @@
+name: diff-review-service
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: diff-review-service:current
+    container_name: diff-review-service
+    restart: unless-stopped
+    # Secrets live only on the server, outside the git checkout:
+    # /srv/backend/diff-review-service/.env (root-owned, 0600).
+    env_file:
+      - ../../.env
+    environment:
+      PORT: 8080
+    # Loopback only - public access goes through nginx + Let's Encrypt.
+    ports:
+      - "127.0.0.1:8020:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
