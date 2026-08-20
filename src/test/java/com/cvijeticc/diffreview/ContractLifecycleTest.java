@@ -71,6 +71,16 @@ class ContractLifecycleTest extends BaseApiTest {
         assertThat(job.path("findings").get(0).path("ruleId").asText()).isEqualTo("MOCK-007");
         assertThat(job.path("findings").get(1).path("ruleId").asText()).isEqualTo("MOCK-003");
         assertThat(job.path("usage").path("chunks").asInt()).isEqualTo(1);
+
+        // "usage still reflects the full scan": the pre-truncation count is
+        // published rather than left to be taken on trust.
+        int total = job.path("usage").path("findingsTotal").asInt();
+        assertThat(total).isGreaterThan(2);
+
+        JsonNode untruncated = awaitTerminal(json(postReview(MAPPER.writeValueAsString(
+                java.util.Map.of("diff", sampleDiff())))).path("jobId").asText());
+        assertThat(untruncated.path("findings")).hasSize(total);
+        assertThat(untruncated.path("usage").path("findingsTotal").asInt()).isEqualTo(total);
     }
 
     @Test

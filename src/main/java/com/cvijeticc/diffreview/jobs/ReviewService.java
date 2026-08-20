@@ -11,15 +11,17 @@ import com.cvijeticc.diffreview.provider.ProviderRegistry;
 import com.cvijeticc.diffreview.provider.ReviewProvider;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,20 +32,27 @@ import org.springframework.stereotype.Service;
  * Owns the whole review pipeline: request validation, idempotency, the
  * result cache, chunking, async execution, dedup + ordering + truncation,
  * and the SSE event log. Providers only ever see one chunk at a time.
+ *
+ * <p>All three stores are bounded by size and by age. Unbounded maps would
+ * survive the scoring window fine and then leak forever; bounding them costs
+ * nothing here and makes the eventual move to Redis a swap of three fields
+ * rather than a redesign. Eviction is why every read of a job id has to
+ * tolerate a miss - including the idempotent-replay path.
  */
 @Service
 public class ReviewService {
 
     private static final Logger log = LoggerFactory.getLogger(ReviewService.class);
 
-    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
-    private final Map<String, List<Finding>> resultCache = new ConcurrentHashMap<>();
-    private final Map<String, IdempotencyEntry> idempotency = new ConcurrentHashMap<>();
+    private final Cache<String, Job> jobs;
+    private final Cache<String, List<Finding>> resultCache;
+    private final Cache<String, IdempotencyEntry> idempotency;
     private final Object idempotencyLock = new Object();
 
     private final AppProperties props;
     private final ProviderRegistry providers;
     private final ExecutorService jobExecutor;
+    private final ExecutorService llmExecutor;
     private final ObjectMapper mapper;
 
     private record IdempotencyEntry(String bodySha256, String jobId) {
@@ -53,11 +62,30 @@ public class ReviewService {
     }
 
     public ReviewService(AppProperties props, ProviderRegistry providers,
-                         @Qualifier("jobExecutor") ExecutorService jobExecutor, ObjectMapper mapper) {
+                         @Qualifier("jobExecutor") ExecutorService jobExecutor,
+                         @Qualifier("llmExecutor") ExecutorService llmExecutor,
+                         ObjectMapper mapper) {
         this.props = props;
         this.providers = providers;
         this.jobExecutor = jobExecutor;
+        this.llmExecutor = llmExecutor;
         this.mapper = mapper;
+        this.jobs = newStore(props.maxRetainedJobs(), props.jobTtlSeconds());
+        // Findings lists and idempotency keys are a fraction of the size of a
+        // job (which carries its chunks and its whole event log), so they are
+        // retained longer on both axes. That is deliberate: an idempotency key
+        // must outlive its job, or a replay with a *different* body after the
+        // job aged out would quietly start new work instead of answering 409.
+        // It is also why every lookup of a job id has to tolerate a miss.
+        this.resultCache = newStore(props.maxRetainedJobs() * 10L, props.keyTtlSeconds());
+        this.idempotency = newStore(props.maxRetainedJobs() * 10L, props.keyTtlSeconds());
+    }
+
+    private static <V> Cache<String, V> newStore(long maximumSize, long ttlSeconds) {
+        return Caffeine.newBuilder()
+                .maximumSize(maximumSize)
+                .expireAfterWrite(Duration.ofSeconds(ttlSeconds))
+                .build();
     }
 
     // ---------- submission ----------
@@ -114,13 +142,18 @@ public class ReviewService {
 
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             synchronized (idempotencyLock) {
-                IdempotencyEntry existing = idempotency.get(idempotencyKey);
+                IdempotencyEntry existing = idempotency.getIfPresent(idempotencyKey);
                 if (existing != null) {
                     if (!existing.bodySha256().equals(bodySha)) {
                         throw ApiException.idempotencyConflict();
                     }
-                    Job job = jobs.get(existing.jobId());
-                    return new SubmitResult(job.id(), job.status().json());
+                    Job job = jobs.getIfPresent(existing.jobId());
+                    if (job != null) {
+                        return new SubmitResult(job.id(), job.status().json());
+                    }
+                    // The key outlived the job it points at; the only honest
+                    // answer is to redo the work under the same key.
+                    idempotency.invalidate(idempotencyKey);
                 }
                 Job job = createAndEnqueue(diff, files, provider, maxFindings, cacheKey);
                 idempotency.put(idempotencyKey, new IdempotencyEntry(bodySha, job.id()));
@@ -139,8 +172,13 @@ public class ReviewService {
                 inputBytes, chunks.size(), cacheKey, chunks);
         jobs.put(job.id(), job);
         emitStatus(job);
-        jobExecutor.submit(() -> run(job));
+        executorFor(provider).submit(() -> run(job));
         return job;
+    }
+
+    /** A slow provider gets its own threads so it cannot queue ahead of a fast one. */
+    private ExecutorService executorFor(String provider) {
+        return "llm".equals(provider) ? llmExecutor : jobExecutor;
     }
 
     // ---------- execution ----------
@@ -152,7 +190,7 @@ public class ReviewService {
             if (props.mockDelayMs() > 0) {
                 Thread.sleep(props.mockDelayMs());
             }
-            List<Finding> full = resultCache.get(job.cacheKey());
+            List<Finding> full = resultCache.getIfPresent(job.cacheKey());
             boolean hit = full != null;
             if (!hit) {
                 ReviewProvider provider = providers.get(job.provider());
@@ -165,9 +203,10 @@ public class ReviewService {
                 List<Finding> sorted = new ArrayList<>(byId.values());
                 sorted.sort(Finding.ORDER);
                 full = List.copyOf(sorted);
-                resultCache.putIfAbsent(job.cacheKey(), full);
+                resultCache.asMap().putIfAbsent(job.cacheKey(), full);
             }
             job.setCacheHit(hit);
+            job.setFindingsTotal(full.size());
             List<Finding> visible = full.size() > job.maxFindings()
                     ? List.copyOf(full.subList(0, job.maxFindings()))
                     : full;
@@ -199,7 +238,7 @@ public class ReviewService {
     // ---------- reads ----------
 
     public Job getOrThrow(String jobId) {
-        Job job = jobs.get(jobId);
+        Job job = jobs.getIfPresent(jobId);
         if (job == null) {
             throw ApiException.notFound("job " + jobId);
         }
@@ -225,6 +264,10 @@ public class ReviewService {
         usage.put("inputBytes", job.inputBytes());
         usage.put("chunks", job.chunkCount());
         usage.put("cacheHit", job.cacheHit());
+        // The scan always covers the whole diff; maxFindings only trims what is
+        // returned. Publishing the pre-truncation count makes that visible
+        // instead of leaving "usage reflects the full scan" to be taken on trust.
+        usage.put("findingsTotal", job.findingsTotal());
         return usage;
     }
 

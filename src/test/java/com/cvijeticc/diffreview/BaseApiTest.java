@@ -22,7 +22,8 @@ import org.springframework.http.ResponseEntity;
  * own context with a small limit to test the real behavior.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = {"app.auth-token=test-token", "app.rate-limit-per-minute=100000"})
+        properties = {"app.auth-token=test-token",
+                "app.rate-limit-per-minute=100000", "app.rate-limit-burst=100000"})
 public abstract class BaseApiTest {
 
     protected static final ObjectMapper MAPPER = new ObjectMapper();
