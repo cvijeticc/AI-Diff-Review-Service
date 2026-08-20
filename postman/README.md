@@ -46,12 +46,12 @@ npx newman run postman/AI-Diff-Review-Service.postman_collection.json --env-var 
 
 The contract requires the `llm` provider to be *fully configured on the server*, which is a
 stronger claim than "it degrades gracefully" — and one a suite that accepts either outcome
-can never make. Step 27 asserts the job reaches `done`, so an unset `ANTHROPIC_API_KEY`
+can never make. Step 27 asserts the job reaches `done`, so an unset `OPENAI_API_KEY`
 turns the suite red and names itself in the failure message:
 
 ```
 llm job did not reach done (server said: llm provider is not configured on this server
-(ANTHROPIC_API_KEY is not set))
+(OPENAI_API_KEY is not set))
 ```
 
 Fix it on the server, not here: add the key to `/srv/backend/diff-review-service/.env` and

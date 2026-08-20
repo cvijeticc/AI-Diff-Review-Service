@@ -54,7 +54,7 @@ class LlmProviderFailureTest extends BaseApiTest {
     void missingApiKeyFailsFastWithAClearMessage() {
         AppProperties props = new AppProperties("1.0.3", "t", 1_048_576, 65_536, 4, 30, 60, 4,
                 86_400, 604_800, 10_000, 0,
-                new AppProperties.Llm("", "http://127.0.0.1:1", "claude-sonnet-5", 1000, 16_000));
+                new AppProperties.Llm("", "http://127.0.0.1:1", "gpt-5-mini", 1000, 16_000));
         LlmReviewProvider provider = new LlmReviewProvider(props, new ObjectMapper());
         try {
             provider.review(List.of());

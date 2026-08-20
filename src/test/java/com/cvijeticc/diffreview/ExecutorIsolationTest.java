@@ -41,14 +41,15 @@ class ExecutorIsolationTest extends BaseApiTest {
     @BeforeAll
     static void startStub() throws IOException {
         stub = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        stub.createContext("/v1/messages", exchange -> {
+        stub.createContext("/v1/chat/completions", exchange -> {
             exchange.getRequestBody().readAllBytes();
             try {
                 Thread.sleep(MODEL_STALL_MS); // a model that is merely slow, not broken
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            byte[] body = "{\"content\":[{\"type\":\"text\",\"text\":\"[]\"}],\"stop_reason\":\"end_turn\"}"
+            byte[] body = ("{\"choices\":[{\"finish_reason\":\"stop\","
+                    + "\"message\":{\"content\":\"{\\\"findings\\\":[]}\"}}]}")
                     .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, body.length);

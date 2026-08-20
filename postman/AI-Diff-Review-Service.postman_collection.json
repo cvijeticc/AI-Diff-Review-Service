@@ -1223,7 +1223,7 @@
     },
     {
       "name": "27 · llm provider — the model path is configured end to end",
-      "description": "Step 26 proves the path degrades gracefully; that is not the same claim as the contract's *\"the `llm` provider must be fully configured on YOUR server… verify the `llm` path works end to end before you submit\"*. This request is that verification, and it is deliberately strict: if `ANTHROPIC_API_KEY` is missing from the server's `.env` the job ends `failed` and this assertion fails, which is the correct outcome — a green suite would otherwise hide an unconfigured provider.",
+      "description": "Step 26 proves the path degrades gracefully; that is not the same claim as the contract's *\"the `llm` provider must be fully configured on YOUR server… verify the `llm` path works end to end before you submit\"*. This request is that verification, and it is deliberately strict: if `OPENAI_API_KEY` is missing from the server's `.env` the job ends `failed` and this assertion fails, which is the correct outcome — a green suite would otherwise hide an unconfigured provider.",
       "request": {
         "method": "GET",
         "url": "{{baseUrl}}/v1/reviews/{{jobLlm}}"

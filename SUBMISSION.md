@@ -39,15 +39,25 @@ lookup of a job id tolerates a miss.
   reported as a finding and is inert by construction — the diff is only ever
   data to a regex engine, there is no code path where its text becomes an
   instruction.
-- **llm** — the same pipeline, with the chunk's raw diff sent to the Anthropic
-  Messages API (`ANTHROPIC_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` — server-side
-  env vars only; clients never send a model key). The system prompt pins the
-  diff as untrusted data inside `<diff>` tags. The model must return a JSON
-  array; entries are validated and clamped (unknown severity/category →
-  defaults, malformed entries dropped). Any failure — missing key, network,
-  non-200, unparseable output — ends as a `failed` job with a clear error
-  message. The service never crashes; a mock job submitted right after a
-  failed llm job works normally (covered by a test).
+- **llm** — the same pipeline, with the chunk's raw diff sent to the OpenAI
+  Chat Completions API (`OPENAI_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` —
+  server-side env vars only; clients never send a model key). The system prompt
+  pins the diff as untrusted data inside `<diff>` tags, and the response shape
+  is enforced by Structured Outputs (`response_format: json_schema`, `strict`)
+  rather than requested in prose and parsed hopefully — that removes the
+  "model returned something else" failure mode instead of handling it. The
+  parser still accepts a bare array, so an endpoint that ignores
+  `response_format` degrades rather than breaks; entries are validated and
+  clamped (unknown severity/category → defaults, malformed entries dropped).
+  Any failure — missing key, network, non-200, truncation, unparseable output —
+  ends as a `failed` job with a clear error message. The upstream error body is
+  logged server-side but never echoed into the client's envelope. The service
+  never crashes; a mock job submitted right after a failed llm job works
+  normally (covered by a test).
+
+  Choosing `/v1/chat/completions` over a vendor-native shape was deliberate: it
+  is what gateways and local runtimes implement, so `LLM_BASE_URL` becomes a
+  real lever rather than decoration.
 
 ## How I verified the cross-cutting behaviors
 
@@ -105,12 +115,16 @@ SSE stream, or a stale image, so the deployment is verified over the wire too.
   `diff --git`. Three tests confirm the tolerance does not turn prose, a bare
   file header or a bare `diff --git` line into a valid diff.
 - **The llm path when the model answers** — `LlmProviderContractTest` runs the
-  provider against a local stub speaking the Anthropic Messages API: a normal
-  reply becomes findings through the same pipeline as mock, the configured
-  `max_tokens` and model are asserted to be what actually goes on the wire, the
-  diff is asserted to arrive fenced as data, malformed entries are dropped
-  rather than failing the job, and a reply truncated at `max_tokens` fails with
-  a message naming that cause instead of an unexplained JSON parse error.
+  provider against a local stub speaking the Chat Completions API: a normal
+  reply becomes findings through the same pipeline as mock, the diff is
+  asserted to arrive fenced as data, malformed entries are dropped rather than
+  failing the job, and a reply truncated at the ceiling fails with a message
+  naming that cause instead of an unexplained JSON parse error. One assertion
+  earns its place on its own: the ceiling must go out as
+  `max_completion_tokens`, because `max_tokens` is deprecated and rejected
+  outright by reasoning models — sending the wrong name is a 400 in production
+  and completely invisible locally, which is the exact class of bug a stub
+  exists to catch.
 - **Resource isolation** — `ExecutorIsolationTest` queues twelve deliberately
   slow llm jobs and then submits a mock job, asserting it finishes in well under
   one round of model latency. On a single shared pool that job waits behind

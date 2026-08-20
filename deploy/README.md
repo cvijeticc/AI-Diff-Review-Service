@@ -25,7 +25,7 @@ the wire in cleartext at every request.
 | `VPS_KNOWN_HOSTS` | server host key, from `ssh-keyscan -H <host>` — pins the host, no TOFU |
 | `VPS_PORT` | optional, defaults to `22` |
 
-App secrets (`AUTH_TOKEN`, `ANTHROPIC_API_KEY`) are **not** GitHub secrets. They
+App secrets (`AUTH_TOKEN`, `OPENAI_API_KEY`) are **not** GitHub secrets. They
 live only in `/srv/backend/diff-review-service/.env` on the server (0600), so a
 compromised CI account cannot read them.
 

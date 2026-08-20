@@ -100,9 +100,9 @@ configured on the server. See [postman/README.md](postman/README.md).
 |---------|---------|---------|
 | `AUTH_TOKEN` | `dev-only-token` | bearer token for all `/v1/*` routes — always set in production |
 | `PORT` | `8080` | HTTP port |
-| `ANTHROPIC_API_KEY` | *(empty)* | enables the `llm` provider; without it llm jobs fail gracefully |
-| `LLM_MODEL` | `claude-sonnet-5` | model id for the llm provider |
-| `LLM_BASE_URL` | `https://api.anthropic.com` | LLM API base URL |
+| `OPENAI_API_KEY` | *(empty)* | enables the `llm` provider; without it llm jobs fail gracefully |
+| `LLM_MODEL` | `gpt-5-mini` | model id for the llm provider |
+| `LLM_BASE_URL` | `https://api.openai.com` | LLM API base URL; any OpenAI-compatible endpoint works |
 | `LLM_TIMEOUT_MS` | `20000` | per-request LLM timeout |
 | `LLM_MAX_TOKENS` | `16000` | output ceiling for a model reply; a chunk's findings array can be long |
 | `MOCK_DELAY_MS` | `0` | artificial per-job delay; used by tests to observe concurrency/live SSE |
@@ -127,13 +127,20 @@ answering 409.
 
 ## The llm provider
 
-`options.provider: "llm"` routes the same pipeline through the Anthropic
-Messages API, on its own thread pool so a slow model cannot queue ahead of mock
-jobs and push them past the latency budget. Credentials exist only as
-server-side environment variables — clients never send a model key. The diff is passed to the model as explicitly
-untrusted data inside `<diff>` tags with a hardened system prompt. If the model
-is unreachable, misconfigured or returns garbage, the job ends as `failed` with
-a clear error message; the service never crashes.
+`options.provider: "llm"` routes the same pipeline through the OpenAI Chat
+Completions API, on its own thread pool so a slow model cannot queue ahead of
+mock jobs and push them past the latency budget. Credentials exist only as
+server-side environment variables — clients never send a model key. The diff is
+passed to the model as explicitly untrusted data inside `<diff>` tags with a
+hardened system prompt, and the reply shape is enforced by Structured Outputs
+(`response_format: json_schema`) rather than hoped for and parsed defensively.
+If the model is unreachable, misconfigured or returns garbage, the job ends as
+`failed` with a clear error message; the service never crashes.
+
+`/v1/chat/completions` is the de-facto shape implemented by gateways and local
+runtimes, so `LLM_BASE_URL` is a genuine lever: pointing it at a self-hosted
+model needs no code change. Upstream error bodies are logged server-side and
+deliberately not echoed into the client's error envelope.
 
 ## Docker
 
