@@ -12,6 +12,7 @@ RUN mvn -q -DskipTests package
 FROM eclipse-temurin:17-jre
 LABEL app=diff-review-service
 WORKDIR /app
-COPY --from=build /app/target/diff-review-service-1.0.0.jar app.jar
+# Wildcard on purpose: bumping the pom version must not break the build.
+COPY --from=build /app/target/*.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]

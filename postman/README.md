@@ -1,7 +1,7 @@
 # Postman conformance suite
 
 `AI-Diff-Review-Service.postman_collection.json` is an executable verification of the
-API contract — 26 requests, 72 assertions, run in order against a live instance.
+API contract — 31 requests, 85 assertions, run in order against a live instance.
 
 It is not a set of sample calls: every cross-cutting behaviour the contract specifies is
 asserted, including the ones that cannot be seen from a single request.
@@ -37,10 +37,34 @@ npx newman run postman/AI-Diff-Review-Service.postman_collection.json --env-var 
 | 19–20 | Chunking | a generated 87 KiB diff splits on file boundaries; findings identical to an unchunked scan — no duplicates, no losses, ordering preserved |
 | 21–24 | Error taxonomy | 400 / 422 / 413 / 404, each with its machine-readable code; the 1 MiB guard rejects without a 5xx |
 | 25–26 | llm provider | the model path terminates cleanly either way, and the service is still serving afterwards |
+| 27 | llm provider | the model path is **actually configured** on the server — see the note below |
+| 28–29 | Parser tolerance | a diff with wrong `@@` counts and no `---`/`+++` pair still yields every added line, at its true line number, with the path recovered from `diff --git` |
+| 30 | Auth | the bearer scheme is matched case-insensitively, per RFC 7235 |
+| 31 | Error taxonomy | the envelope also covers the framework's own error path — no HTML escapes on any non-2xx |
 
-Rate limiting and 4-way concurrency are deliberately **not** here: a burst would consume the
-shared 30/min window, and concurrency needs parallel in-flight jobs. Both are covered by the
-JUnit suite (`RateLimitTest`, `ConcurrencyTest`).
+### Step 27 fails on purpose when the model is not configured
+
+The contract requires the `llm` provider to be *fully configured on the server*, which is a
+stronger claim than "it degrades gracefully" — and one a suite that accepts either outcome
+can never make. Step 27 asserts the job reaches `done`, so an unset `ANTHROPIC_API_KEY`
+turns the suite red and names itself in the failure message:
+
+```
+llm job did not reach done (server said: llm provider is not configured on this server
+(ANTHROPIC_API_KEY is not set))
+```
+
+Fix it on the server, not here: add the key to `/srv/backend/diff-review-service/.env` and
+redeploy. Step 26 still covers graceful degradation independently, so nothing is lost by
+step 27 being strict.
+
+### What is deliberately not here
+
+Rate limiting and 4-way concurrency: a burst would eat into the shared budget of a scored
+run, and concurrency needs parallel in-flight jobs, which a sequential runner cannot
+produce. Both are covered by the JUnit suite — `RateLimiterSustainedRateTest` (the sustained
+30/min guarantee, on a virtual clock), `RateLimitWallClockTest` (the same guarantee measured
+over real time through the full HTTP stack), `RateLimitTest` and `ConcurrencyTest`.
 
 ## Design notes
 

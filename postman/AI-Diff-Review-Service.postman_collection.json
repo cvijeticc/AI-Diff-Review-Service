@@ -101,6 +101,14 @@
     {
       "key": "jobLlm",
       "value": ""
+    },
+    {
+      "key": "jobTolerant",
+      "value": ""
+    },
+    {
+      "key": "baselineTotal",
+      "value": ""
     }
   ],
   "item": [
@@ -137,7 +145,7 @@
     },
     {
       "name": "02 · Discovery — GET /spec",
-      "description": "Machine-readable self-declaration. These limits are read from the same configuration bean the rate limiter, chunker, executor and payload guard use, so the declaration cannot drift from behaviour — steps 19 and 23 verify two of them against real traffic.",
+      "description": "Machine-readable self-declaration. These limits are read from the same configuration bean the rate limiter, chunker, executor and payload guard use, so the declaration cannot drift from behaviour — steps 19 and 23 verify two of them against real traffic. The contract speaks of \"your declared burst\", so `burstLimit` is published alongside the sustained rate: the two are different numbers in a token bucket and only declaring one of them leaves the other unverifiable.",
       "request": {
         "method": "GET",
         "url": "{{baseUrl}}/spec",
@@ -162,6 +170,10 @@
               "    pm.expect(b.limits.chunkBytes).to.eql(65536);",
               "    pm.expect(b.limits.maxConcurrentJobs).to.be.at.least(4);",
               "    pm.expect(b.limits.rateLimitPerMinute).to.be.at.least(30);",
+              "});",
+              "pm.test('declares the burst allowance the contract refers to', () => {",
+              "    pm.expect(b.limits.burstLimit, 'burstLimit is missing from /spec').to.be.a('number');",
+              "    pm.expect(b.limits.burstLimit).to.be.at.least(b.limits.rateLimitPerMinute);",
               "});",
               "pm.collectionVariables.set('declaredChunkBytes', b.limits.chunkBytes);",
               "pm.collectionVariables.set('declaredMaxPayload', b.limits.maxPayloadBytes);"
@@ -404,7 +416,11 @@
               "    pm.expect(b.usage.cacheHit).to.be.a('boolean');",
               "});",
               "",
-              "pm.collectionVariables.set('baselineFindings', JSON.stringify(b.findings));"
+              "pm.collectionVariables.set('baselineFindings', JSON.stringify(b.findings));",
+              "pm.collectionVariables.set('baselineTotal', b.findings.length);",
+              "pm.test('usage reports the pre-truncation count', () => {",
+              "    pm.expect(b.usage.findingsTotal).to.eql(b.findings.length);",
+              "});"
             ]
           }
         }
@@ -856,6 +872,9 @@
               "pm.test('usage still reflects the full scan', () => {",
               "    pm.expect(b.usage.chunks).to.eql(1);",
               "    pm.expect(b.usage.inputBytes).to.be.above(700);",
+              "    // The scan covered everything; the cap only trimmed what came back.",
+              "    pm.expect(b.usage.findingsTotal).to.eql(Number(pm.collectionVariables.get('baselineTotal')));",
+              "    pm.expect(b.usage.findingsTotal).to.be.above(b.findings.length);",
               "});"
             ]
           }
@@ -1196,6 +1215,191 @@
               "        pm.expect(res.json().status).to.eql('ok');",
               "        done();",
               "    });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "27 · llm provider — the model path is configured end to end",
+      "description": "Step 26 proves the path degrades gracefully; that is not the same claim as the contract's *\"the `llm` provider must be fully configured on YOUR server… verify the `llm` path works end to end before you submit\"*. This request is that verification, and it is deliberately strict: if `ANTHROPIC_API_KEY` is missing from the server's `.env` the job ends `failed` and this assertion fails, which is the correct outcome — a green suite would otherwise hide an unconfigured provider.",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/reviews/{{jobLlm}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const b = pm.response.json();",
+              "if (b.status === 'queued' || b.status === 'running') {",
+              "    const n = Number(pm.collectionVariables.get('poll') || 0);",
+              "    if (n < 25) { pm.collectionVariables.set('poll', n + 1); postman.setNextRequest(pm.info.requestName); return; }",
+              "}",
+              "pm.collectionVariables.set('poll', 0);",
+              "",
+              "pm.test('the llm provider is configured — the job completed', () => {",
+              "    const why = b.status === 'failed' ? ' (server said: ' + (b.error || {}).message + ')' : '';",
+              "    pm.expect(b.status, 'llm job did not reach done' + why).to.eql('done');",
+              "});",
+              "",
+              "pm.test('the model returned a well-formed findings array', () => {",
+              "    pm.expect(b.findings).to.be.an('array');",
+              "    b.findings.forEach(f => {",
+              "        pm.expect(f.path, 'finding without a path').to.be.a('string').and.not.empty;",
+              "        pm.expect(f.line).to.be.a('number').and.to.be.above(0);",
+              "        pm.expect(['critical', 'high', 'medium', 'low']).to.include(f.severity);",
+              "        pm.expect(['security', 'correctness', 'performance', 'style']).to.include(f.category);",
+              "    });",
+              "});",
+              "",
+              "pm.test('the pipeline filled usage for the model path too', () => {",
+              "    pm.expect(b.usage.chunks).to.be.at.least(1);",
+              "    pm.expect(b.usage.findingsTotal).to.be.a('number');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "28 · Parser tolerance — submit a diff whose @@ counts are wrong",
+      "description": "A hand-written or generated diff routinely gets the `@@` line counts wrong and drops the `---`/`+++` pair while keeping `diff --git`. Both are present here: the header promises one added line and delivers three, and there is no `---`/`+++` at all. A strict parser answers 422 or — worse — accepts the diff and silently scans only the first line.",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/v1/reviews",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"diff\": \"diff --git a/src/handwritten.ts b/src/handwritten.ts\\nindex 1111111..2222222 100644\\n@@ -0,0 +1,1 @@\\n+eval(userInput);\\n+// TODO remove this\\n+console.log(token);\\n\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('accepted with 202 and a job id', () => {",
+              "    pm.response.to.have.status(202);",
+              "    const b = pm.response.json();",
+              "    pm.expect(b.jobId).to.be.a('string').and.not.empty;",
+              "    pm.expect(b.status).to.eql('queued');",
+              "    pm.collectionVariables.set('jobTolerant', b.jobId);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "29 · Parser tolerance — no added line is silently dropped",
+      "description": "The three added lines must all be scanned and the path must be recovered from the `diff --git` header. Losing lines here would still report `done`, which is why this is asserted on exact finding ids rather than on the job status.",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/reviews/{{jobTolerant}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const b = pm.response.json();",
+              "if (b.status === 'queued' || b.status === 'running') {",
+              "    const n = Number(pm.collectionVariables.get('poll') || 0);",
+              "    if (n < 25) { pm.collectionVariables.set('poll', n + 1); postman.setNextRequest(pm.info.requestName); return; }",
+              "}",
+              "pm.collectionVariables.set('poll', 0);",
+              "",
+              "pm.test('job completed', () => pm.expect(b.status).to.eql('done'));",
+              "",
+              "pm.test('the path came from the diff --git header', () => {",
+              "    b.findings.forEach(f => pm.expect(f.path).to.eql('src/handwritten.ts'));",
+              "});",
+              "",
+              "pm.test('every added line was scanned, at its true line number', () => {",
+              "    const ids = b.findings.map(f => f.id);",
+              "    pm.expect(ids).to.include('MOCK-001:src/handwritten.ts:1');",
+              "    pm.expect(ids).to.include('MOCK-008:src/handwritten.ts:2');",
+              "    pm.expect(ids).to.include('MOCK-007:src/handwritten.ts:3');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "30 · Auth — the bearer scheme is case-insensitive",
+      "description": "RFC 7235 defines the auth-scheme as case-insensitive, so `bearer <token>` is a valid credential. Rejecting it is a server bug, and one that a client library choosing its own capitalisation would trip over.",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/v1/reviews/{{jobId}}",
+        "auth": {
+          "type": "noauth"
+        },
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "bearer {{token}}"
+          }
+        ]
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('lowercase scheme is accepted', () => {",
+              "    pm.response.to.have.status(200);",
+              "    pm.expect(pm.response.json().jobId).to.eql(pm.collectionVariables.get('jobId'));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "31 · Errors — the envelope covers the framework's own error path",
+      "description": "The contract asks for the error envelope on *every* non-2xx, including the responses the application never explicitly writes: the framework's default error page and the container's own rejections. Anything that answers with HTML here is a hole in the taxonomy.",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/error",
+        "auth": {
+          "type": "noauth"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('not a 2xx', () => pm.expect(pm.response.code).to.be.at.least(400));",
+              "pm.test('answers JSON, not an HTML error page', () => {",
+              "    pm.expect(pm.response.text()).to.not.include('<html');",
+              "    pm.expect(pm.response.text()).to.not.include('<!DOCTYPE');",
+              "});",
+              "pm.test('uses the contract envelope', () => {",
+              "    const b = pm.response.json();",
+              "    pm.expect(b.error).to.be.an('object');",
+              "    pm.expect(b.error.code).to.be.a('string').and.not.empty;",
+              "    pm.expect(b.error.message).to.be.a('string').and.not.empty;",
+              "    pm.expect(b.timestamp, 'framework default body leaked through').to.be.undefined;",
               "});"
             ]
           }
