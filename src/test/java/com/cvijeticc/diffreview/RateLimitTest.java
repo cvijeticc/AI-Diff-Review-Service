@@ -16,11 +16,12 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
 /**
- * Runs in its own context with a limit of 3/min so the sliding window can
- * be exhausted quickly. Only POST /v1/reviews is limited; GETs never are.
+ * Runs in its own context with a burst of 3 so the bucket can be emptied
+ * quickly. Only POST /v1/reviews is limited; GETs never are.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = {"app.auth-token=test-token", "app.rate-limit-per-minute=3"})
+        properties = {"app.auth-token=test-token",
+                "app.rate-limit-per-minute=3", "app.rate-limit-burst=3"})
 class RateLimitTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -49,12 +50,16 @@ class RateLimitTest {
         ResponseEntity<String> limited = post("rl-over");
         assertThat(limited.getStatusCode().value()).isEqualTo(429);
         assertThat(limited.getHeaders().getFirst("Retry-After")).isNotNull();
-        assertThat(Long.parseLong(limited.getHeaders().getFirst("Retry-After"))).isGreaterThanOrEqualTo(1);
+        long retryAfter = Long.parseLong(limited.getHeaders().getFirst("Retry-After"));
+        assertThat(retryAfter).isGreaterThanOrEqualTo(1);
+        // Proportional recovery: one token at 3/min is 20 s, and crucially it is
+        // never the full 60 s window a fixed-window limiter would demand.
+        assertThat(retryAfter).isLessThan(60);
         JsonNode envelope = MAPPER.readTree(limited.getBody());
         assertThat(envelope.path("error").path("code").asText()).isEqualTo("rate_limited");
         assertThat(envelope.path("error").path("message").asText()).isNotBlank();
 
-        // GETs are exempt: repeated polling while the POST window is exhausted still works
+        // GETs are exempt: repeated polling while the POST bucket is empty still works
         HttpHeaders headers = new HttpHeaders();
         headers.set("Authorization", "Bearer test-token");
         for (int i = 0; i < 10; i++) {
