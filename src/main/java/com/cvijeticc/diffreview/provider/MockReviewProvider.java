@@ -29,9 +29,13 @@ public class MockReviewProvider implements ReviewProvider {
 
     private static final Pattern DEEP_CLONE = Pattern.compile("JSON\\.parse\\(\\s*JSON\\.stringify\\(");
 
-    // A string literal containing a SQL keyword; concatenation with + is checked around the match.
+    // A string literal containing a SQL keyword; concatenation with + is checked
+    // around the match. Group 1 is the delimiter (backreferenced so the literal
+    // has to close with the same quote), group 2 the body. Backticks count:
+    // a JS template literal is a string, and "${...}" inside one is
+    // concatenation by another name.
     private static final Pattern SQL_STRING = Pattern.compile(
-            "[\"'][^\"']*\\b(SELECT|INSERT|UPDATE|DELETE)\\b[^\"']*[\"']");
+            "([\"'`])([^\"'`]*\\b(?:SELECT|INSERT|UPDATE|DELETE)\\b[^\"'`]*)\\1");
 
     private static final Pattern CATCH_CLAUSE = Pattern.compile("\\bcatch\\b\\s*(\\([^)]*\\))?\\s*");
 
@@ -94,10 +98,13 @@ public class MockReviewProvider implements ReviewProvider {
         }
     }
 
-    /** SQL keyword inside a string literal that is concatenated with +. */
+    /** SQL keyword inside a string literal that is concatenated with + or interpolated. */
     private static boolean sqlConcatenation(String s) {
         Matcher m = SQL_STRING.matcher(s);
         while (m.find()) {
+            if ("`".equals(m.group(1)) && m.group(2).contains("${")) {
+                return true; // `SELECT ... ${id}` is the same injection, spelled differently
+            }
             int after = m.end();
             while (after < s.length() && Character.isWhitespace(s.charAt(after))) {
                 after++;

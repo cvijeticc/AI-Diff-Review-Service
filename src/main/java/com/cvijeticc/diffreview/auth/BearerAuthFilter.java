@@ -15,10 +15,16 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
  * All /v1/* routes (every method) require an Authorization bearer token.
- * /health and /spec stay public. Comparison is constant-time.
+ * /health and /spec stay public.
+ *
+ * <p>The scheme name is matched case-insensitively because RFC 7235 defines
+ * it that way - "bearer x" is a valid credential and rejecting it is our bug,
+ * not the client's. The token itself is compared in constant time.
  */
 @Component
 public class BearerAuthFilter extends OncePerRequestFilter {
+
+    private static final String SCHEME = "Bearer ";
 
     private final AppProperties props;
     private final ObjectMapper mapper;
@@ -36,11 +42,7 @@ public class BearerAuthFilter extends OncePerRequestFilter {
             chain.doFilter(request, response);
             return;
         }
-        String header = request.getHeader("Authorization");
-        String expected = "Bearer " + props.authToken();
-        boolean ok = header != null && MessageDigest.isEqual(
-                header.getBytes(StandardCharsets.UTF_8), expected.getBytes(StandardCharsets.UTF_8));
-        if (!ok) {
+        if (!isAuthorized(request.getHeader("Authorization"))) {
             response.setStatus(401);
             response.setContentType("application/json");
             response.setCharacterEncoding("UTF-8");
@@ -49,5 +51,15 @@ public class BearerAuthFilter extends OncePerRequestFilter {
             return;
         }
         chain.doFilter(request, response);
+    }
+
+    private boolean isAuthorized(String header) {
+        if (header == null || !header.regionMatches(true, 0, SCHEME, 0, SCHEME.length())) {
+            return false;
+        }
+        String presented = header.substring(SCHEME.length()).strip();
+        return MessageDigest.isEqual(
+                presented.getBytes(StandardCharsets.UTF_8),
+                props.authToken().getBytes(StandardCharsets.UTF_8));
     }
 }

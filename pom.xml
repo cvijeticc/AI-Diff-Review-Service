@@ -13,7 +13,7 @@
 
     <groupId>com.cvijeticc</groupId>
     <artifactId>diff-review-service</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.3</version>
     <name>diff-review-service</name>
     <description>AI Diff Review Service - async unified-diff review with mock and llm providers</description>
 
@@ -25,6 +25,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- Bounded, self-expiring maps for the job store, result cache and
+             idempotency keys; version is managed by the Spring Boot parent. -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

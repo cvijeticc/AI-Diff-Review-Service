@@ -23,6 +23,7 @@ public final class Job {
 
     private volatile JobStatus status = JobStatus.QUEUED;
     private volatile List<Finding> findings = List.of();
+    private volatile int findingsTotal;
     private volatile boolean cacheHit;
     private volatile String errorMessage;
 
@@ -82,6 +83,15 @@ public final class Job {
 
     public void setFindings(List<Finding> findings) {
         this.findings = findings;
+    }
+
+    /** Findings the scan produced before maxFindings truncation. */
+    public int findingsTotal() {
+        return findingsTotal;
+    }
+
+    public void setFindingsTotal(int findingsTotal) {
+        this.findingsTotal = findingsTotal;
     }
 
     public boolean cacheHit() {

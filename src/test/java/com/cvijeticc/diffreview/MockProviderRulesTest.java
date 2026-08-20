@@ -70,6 +70,19 @@ class MockProviderRulesTest {
     }
 
     @Test
+    void mock003TemplateLiteralsAreStringsToo() {
+        // A backtick literal is a JS string and "${...}" inside one is
+        // concatenation spelled differently - same injection, same finding.
+        List<Finding> f = scanLines(
+                "const q = `SELECT * FROM users WHERE id = ${id}`;",
+                "const q2 = `DELETE FROM t WHERE a=1` + suffix;",
+                "const safe = `SELECT * FROM t`;",
+                "const notSql = `hello ${name}`;");
+        assertThat(f).extracting(Finding::ruleId).containsExactly("MOCK-003", "MOCK-003");
+        assertThat(f).extracting(Finding::line).containsExactly(1, 2);
+    }
+
+    @Test
     void mock004EmptyCatchSingleLine() {
         List<Finding> f = scanLines("} catch (e) {}");
         assertThat(f).hasSize(1);

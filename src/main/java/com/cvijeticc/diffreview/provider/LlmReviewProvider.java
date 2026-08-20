@@ -69,7 +69,10 @@ public class LlmReviewProvider implements ReviewProvider {
 
         ObjectNode body = mapper.createObjectNode();
         body.put("model", props.llm().model());
-        body.put("max_tokens", 4096);
+        // A chunk runs up to chunkBytes, so a findings array for it can be long.
+        // Too small a ceiling truncates the JSON array mid-element and the parse
+        // fails on output that was otherwise fine - a silent budget bug.
+        body.put("max_tokens", props.llm().maxTokens());
         body.put("system", SYSTEM_PROMPT);
         ArrayNode messages = body.putArray("messages");
         ObjectNode msg = messages.addObject();
@@ -89,6 +92,13 @@ public class LlmReviewProvider implements ReviewProvider {
             throw new IllegalStateException("llm provider returned HTTP " + response.statusCode());
         }
         JsonNode root = mapper.readTree(response.body());
+        String stopReason = root.path("stop_reason").asText("");
+        if ("max_tokens".equals(stopReason)) {
+            // The array is cut off mid-element; failing here names the real cause
+            // instead of surfacing it as an unexplained JSON parse error.
+            throw new IllegalStateException("llm response hit the max_tokens limit ("
+                    + props.llm().maxTokens() + ") and was truncated");
+        }
         String text = root.path("content").path(0).path("text").asText("");
         return parseFindings(stripFences(text));
     }

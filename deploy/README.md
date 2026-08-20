@@ -10,8 +10,10 @@ CI/CD runs on GitHub Actions (`.github/workflows/deploy.yml`):
    does not answer within ~2 minutes the previous commit is redeployed
    automatically and the job fails.
 
-The service listens on `127.0.0.1:8020` (container port 8080). Public access is
-expected to go through nginx + TLS, not the host port.
+The service listens on `127.0.0.1:8020` (container port 8080). Public access goes
+through nginx + TLS, not the host port — see **TLS** below. The bearer token is
+the only credential clients hold, so serving it over plain HTTP would put it on
+the wire in cleartext at every request.
 
 ## Required GitHub secrets
 
@@ -63,3 +65,55 @@ sudo -u diffreview-deploy /srv/backend/diff-review-service/deploy.sh          # 
 sudo -u diffreview-deploy env SSH_ORIGINAL_COMMAND=<sha> \
   /srv/backend/diff-review-service/deploy.sh                                  # specific commit
 ```
+
+## TLS
+
+The published URL must be `https://`. A certificate cannot be issued for a bare
+IP, so the service needs a hostname:
+
+```bash
+# 1. DNS: an A record for diffreview.<your-domain> pointing at the server.
+
+# 2. nginx vhost
+cat >/etc/nginx/sites-available/diffreview <<'NGINX'
+server {
+    listen 80;
+    server_name diffreview.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8020;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # SSE: without these the stream is buffered and events arrive in one
+        # batch at the end, which looks identical to a broken stream and is the
+        # one failure mode that cannot reproduce locally.
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+        chunked_transfer_encoding on;
+    }
+}
+NGINX
+ln -sf /etc/nginx/sites-available/diffreview /etc/nginx/sites-enabled/diffreview
+nginx -t && systemctl reload nginx
+
+# 3. Certificate + automatic HTTP->HTTPS redirect
+certbot --nginx -d diffreview.example.com
+```
+
+Verify TLS *and* that the reverse proxy did not break streaming — a suite that
+passes against `localhost` proves nothing about the proxy in front of it:
+
+```bash
+curl -sS https://diffreview.example.com/health
+npx newman run postman/AI-Diff-Review-Service.postman_collection.json \
+  --env-var baseUrl=https://diffreview.example.com --env-var token="$TOKEN"
+```
+
+The application already sends `X-Accel-Buffering: no` on the SSE route, which
+nginx honours on its own; `proxy_buffering off` is belt and braces for proxies
+that do not.

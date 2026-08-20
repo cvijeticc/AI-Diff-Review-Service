@@ -62,12 +62,37 @@ curl -N localhost:8080/v1/reviews/<jobId>/stream -H "Authorization: Bearer $TOKE
 ./mvnw test
 ```
 
-Unit tests cover every mock rule (including the tricky negatives: `=== null`,
-multi-line empty `catch`, removed lines that look like `---` file headers) plus
-the parser and the chunker. Black-box integration tests boot the real server
-and verify the full contract: lifecycle, auth, error taxonomy, chunk counts
-with identical findings, cache hits, idempotency replay/conflict, byte-identical
-SSE replay, 429 + `Retry-After`, 4+1 concurrency and llm graceful failure.
+90 tests. Unit tests cover every mock rule (including the tricky negatives:
+`=== null`, multi-line empty `catch`, removed lines that look like `---` file
+headers) plus the parser — strict while the `@@` counts run, tolerant of the
+headers those counts cannot vouch for — and the chunker. Black-box integration
+tests boot the real server and verify the full contract: lifecycle, auth, error
+taxonomy, chunk counts with identical findings, cache hits, idempotency
+replay/conflict, byte-identical SSE replay, 4+1 concurrency, job eviction, and
+the llm path against a stub that speaks the Messages API.
+
+Two tests are aimed at the rate limiter's *sustained* guarantee rather than at
+its ceiling, because those are different claims and only the ceiling is easy to
+assert: `RateLimiterSustainedRateTest` runs the contract's own 30/min for ten
+simulated minutes on a virtual clock, and `RateLimitWallClockTest` reproduces
+the same experiment over real time through the full HTTP stack — hammer until
+the limit engages, then hold the sustained rate and require zero refusals.
+
+### Verifying a running instance
+
+`postman/` holds a conformance suite that asserts the same contract against a
+deployed service — 31 requests, 85 assertions, no import required:
+
+```bash
+npx newman run postman/AI-Diff-Review-Service.postman_collection.json --env-var baseUrl=http://localhost:8080 --env-var token=YOUR_TOKEN
+```
+
+It covers the behaviours that a single request cannot show: chunk boundaries on
+an 87 KiB diff, cache miss then hit with deep-equal findings, idempotency replay
+and conflict, byte-identical SSE replay, the full error taxonomy including the
+1 MiB guard, parser tolerance for imperfect `@@` headers, and llm degradation.
+One step is strict on purpose: it fails unless the `llm` provider is genuinely
+configured on the server. See [postman/README.md](postman/README.md).
 
 ## Configuration
 
@@ -79,18 +104,33 @@ SSE replay, 429 + `Retry-After`, 4+1 concurrency and llm graceful failure.
 | `LLM_MODEL` | `claude-sonnet-5` | model id for the llm provider |
 | `LLM_BASE_URL` | `https://api.anthropic.com` | LLM API base URL |
 | `LLM_TIMEOUT_MS` | `20000` | per-request LLM timeout |
+| `LLM_MAX_TOKENS` | `16000` | output ceiling for a model reply; a chunk's findings array can be long |
 | `MOCK_DELAY_MS` | `0` | artificial per-job delay; used by tests to observe concurrency/live SSE |
 
 The limits published by `/spec` (1 MiB payload, 64 KiB chunks, 4 concurrent
-jobs, 30 submissions/min) live in `application.properties` and are read by the
-enforcing components from the same `AppProperties` bean, so the declaration
-cannot drift from behavior.
+jobs, 30 submissions/min sustained with a burst of 60) live in
+`application.properties` and are read by the enforcing components from the same
+`AppProperties` bean, so the declaration cannot drift from behavior —
+`burstLimit` is read straight off the limiter object itself.
+
+Rate limiting is a token bucket: `rateLimitPerMinute` is the sustained rate that
+is guaranteed to succeed, `rateLimitBurst` the declared allowance for arriving
+faster than that. A refused caller waits only for one token to refill (~2 s),
+not for a whole window to age out.
+
+Jobs, cached results and idempotency keys are bounded by both size
+(`app.max-retained-jobs`) and age (`app.job-ttl-seconds` for jobs,
+`app.key-ttl-seconds` for keys and cached findings). Keys are retained longer
+than the jobs they refer to, deliberately: an idempotency key must outlive its
+job or a replay with a *different* body would quietly start new work instead of
+answering 409.
 
 ## The llm provider
 
 `options.provider: "llm"` routes the same pipeline through the Anthropic
-Messages API. Credentials exist only as server-side environment variables —
-clients never send a model key. The diff is passed to the model as explicitly
+Messages API, on its own thread pool so a slow model cannot queue ahead of mock
+jobs and push them past the latency budget. Credentials exist only as
+server-side environment variables — clients never send a model key. The diff is passed to the model as explicitly
 untrusted data inside `<diff>` tags with a hardened system prompt. If the model
 is unreachable, misconfigured or returns garbage, the job ends as `failed` with
 a clear error message; the service never crashes.

@@ -15,9 +15,14 @@ public record AppProperties(
         int chunkBytes,
         int maxConcurrentJobs,
         int rateLimitPerMinute,
+        int rateLimitBurst,
+        int maxConcurrentLlmJobs,
+        long jobTtlSeconds,
+        long keyTtlSeconds,
+        int maxRetainedJobs,
         long mockDelayMs,
         Llm llm
 ) {
-    public record Llm(String apiKey, String baseUrl, String model, long timeoutMs) {
+    public record Llm(String apiKey, String baseUrl, String model, long timeoutMs, int maxTokens) {
     }
 }
