@@ -7,10 +7,25 @@ import java.util.regex.Pattern;
 
 /**
  * Parser for unified diffs, both plain and git-style. It tracks new-file
- * line numbers for added/context lines, uses the hunk header line counts to
- * know exactly where a hunk ends (so removed lines starting with "---" can
- * never be mistaken for a file header), and keeps the raw text of each file
- * section for chunk sizing.
+ * line numbers for added/context lines and uses the hunk header line counts
+ * to know where a hunk ends.
+ *
+ * <p>The counts are load-bearing: while they are still live, a removed line
+ * whose content starts with two dashes renders as {@code --- x} and must be
+ * consumed as hunk content, never mistaken for a file header. That is why
+ * the strict, count-driven walk stays exactly as strict as it was.
+ *
+ * <p>What is deliberately tolerant is everything the counts cannot vouch
+ * for, because a hand-written or generated diff gets those wrong far more
+ * often than it gets the content wrong:
+ * <ul>
+ *   <li>counts that <em>undercount</em> the hunk - the tail is still consumed,
+ *       because silently dropping added lines is worse than any parse error;</li>
+ *   <li>counts that <em>overcount</em> it - the hunk ends cleanly at the next
+ *       section or at end of input instead of failing the whole diff;</li>
+ *   <li>a missing {@code ---}/{@code +++} pair - the path falls back to the
+ *       {@code diff --git a/X b/X} header, and a lone {@code +++} is accepted.</li>
+ * </ul>
  */
 public final class UnifiedDiffParser {
 
@@ -23,6 +38,7 @@ public final class UnifiedDiffParser {
     private static final class FileBuilder {
         String oldPath;
         String newPath;
+        String gitPath;
         final List<Hunk> hunks = new ArrayList<>();
         final List<String> raw = new ArrayList<>();
 
@@ -33,7 +49,7 @@ public final class UnifiedDiffParser {
             if (oldPath != null && !"/dev/null".equals(oldPath)) {
                 return stripPrefix(oldPath, "a/");
             }
-            return null;
+            return gitPath; // "diff --git a/X b/X" without a ---/+++ pair
         }
     }
 
@@ -55,6 +71,7 @@ public final class UnifiedDiffParser {
             if (line.startsWith("diff --git ")) {
                 flush(files, current);
                 current = new FileBuilder();
+                current.gitPath = parseGitHeaderPath(line);
                 current.raw.add(line);
                 i++;
                 continue;
@@ -70,8 +87,10 @@ public final class UnifiedDiffParser {
                 continue;
             }
             if (line.startsWith("+++ ")) {
-                if (current == null || current.oldPath == null) {
-                    throw new DiffParseException("+++ header without a matching --- header at line " + (i + 1));
+                // A missing "---" is a malformed header, not a reason to lose the file.
+                if (current == null || current.newPath != null || !current.hunks.isEmpty()) {
+                    flush(files, current);
+                    current = new FileBuilder();
                 }
                 current.newPath = parsePath(line.substring(4));
                 current.raw.add(line);
@@ -90,35 +109,35 @@ public final class UnifiedDiffParser {
                 List<DiffLine> lines = new ArrayList<>();
                 int newNumber = newStart;
                 i++;
-                while ((oldRemaining > 0 || newRemaining > 0) && i < end) {
+                while (i < end) {
                     String hl = stripCr(rawLines[i]);
                     if (hl.startsWith("\\")) { // "\ No newline at end of file"
                         current.raw.add(hl);
                         i++;
                         continue;
                     }
+                    if (oldRemaining > 0 || newRemaining > 0) {
+                        // Only lines that can never be hunk content end the hunk while
+                        // the counts run; "--- x" / "+++ x" are still removed/added lines.
+                        if (isUnambiguousSectionStart(hl)) {
+                            break;
+                        }
+                    } else if (startsNewSection(hl) || !isHunkContent(hl)) {
+                        break; // counts exhausted and this is genuinely past the hunk
+                    }
                     char kind = hl.isEmpty() ? ' ' : hl.charAt(0);
                     String content = hl.isEmpty() ? "" : hl.substring(1);
                     switch (kind) {
                         case ' ' -> {
-                            if (oldRemaining <= 0 || newRemaining <= 0) {
-                                throw new DiffParseException("hunk line counts do not match content at line " + (i + 1));
-                            }
                             lines.add(new DiffLine(' ', content, newNumber++));
                             oldRemaining--;
                             newRemaining--;
                         }
                         case '+' -> {
-                            if (newRemaining <= 0) {
-                                throw new DiffParseException("hunk line counts do not match content at line " + (i + 1));
-                            }
                             lines.add(new DiffLine('+', content, newNumber++));
                             newRemaining--;
                         }
                         case '-' -> {
-                            if (oldRemaining <= 0) {
-                                throw new DiffParseException("hunk line counts do not match content at line " + (i + 1));
-                            }
                             lines.add(new DiffLine('-', content, -1));
                             oldRemaining--;
                         }
@@ -127,9 +146,8 @@ public final class UnifiedDiffParser {
                     current.raw.add(hl);
                     i++;
                 }
-                if (oldRemaining > 0 || newRemaining > 0) {
-                    throw new DiffParseException("truncated hunk: line counts not satisfied");
-                }
+                // Unsatisfied counts end the hunk with whatever was actually there:
+                // the content is the truth, the declared count is only a hint.
                 current.hunks.add(new Hunk(newStart, List.copyOf(lines)));
                 continue;
             }
@@ -146,10 +164,41 @@ public final class UnifiedDiffParser {
         return files;
     }
 
+    /** Lines that cannot be hunk content, because hunk content always starts with '+', '-' or ' '. */
+    private static boolean isUnambiguousSectionStart(String l) {
+        return l.startsWith("diff --git ") || HUNK_HEADER.matcher(l).matches();
+    }
+
+    private static boolean startsNewSection(String l) {
+        return l.startsWith("--- ") || l.startsWith("+++ ") || isUnambiguousSectionStart(l);
+    }
+
+    private static boolean isHunkContent(String l) {
+        if (l.isEmpty()) {
+            return true; // an empty line is an empty context line
+        }
+        char c = l.charAt(0);
+        return c == '+' || c == '-' || c == ' ';
+    }
+
     private static void flush(List<DiffFile> files, FileBuilder b) {
         if (b != null && b.resolvedPath() != null && !b.hunks.isEmpty()) {
             files.add(new DiffFile(b.resolvedPath(), List.copyOf(b.hunks), String.join("\n", b.raw)));
         }
+    }
+
+    /** "diff --git a/src/db.ts b/src/db.ts" to "src/db.ts"; used when ---/+++ are missing. */
+    private static String parseGitHeaderPath(String line) {
+        String rest = line.substring("diff --git ".length()).strip();
+        int mid = rest.indexOf(" b/");
+        if (mid > 0) {
+            return stripPrefix(parsePath(rest.substring(mid + 1)), "b/");
+        }
+        int space = rest.lastIndexOf(' ');
+        if (space > 0) {
+            return stripPrefix(parsePath(rest.substring(space + 1)), "b/");
+        }
+        return null;
     }
 
     private static String parsePath(String s) {

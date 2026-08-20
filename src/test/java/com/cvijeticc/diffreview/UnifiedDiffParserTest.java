@@ -33,10 +33,15 @@ class UnifiedDiffParserTest {
     }
 
     @Test
-    void rejectsTruncatedHunk() {
-        assertThatThrownBy(() -> UnifiedDiffParser.parse(diff(
-                "--- a/x.js", "+++ b/x.js", "@@ -1,2 +1,3 @@", " one", "+two")))
-                .isInstanceOf(DiffParseException.class);
+    void overcountedHunkKeepsWhatIsActuallyThereInsteadOfFailingTheDiff() {
+        // The header promises 3 new lines and delivers 2. Rejecting the whole
+        // diff over a miscounted header loses findings that are plainly there;
+        // the content is the truth and the count is only a hint.
+        List<DiffFile> files = UnifiedDiffParser.parse(diff(
+                "--- a/x.js", "+++ b/x.js", "@@ -1,2 +1,3 @@", " one", "+two"));
+        assertThat(files).hasSize(1);
+        assertThat(files.get(0).hunks().get(0).lines())
+                .extracting(DiffLine::content).containsExactly("one", "two");
     }
 
     @Test
@@ -122,5 +127,94 @@ class UnifiedDiffParserTest {
                 "--- a/x.js", "+++ b/x.js", "@@ -1 +1 @@", "-a", "+b",
                 "\\ No newline at end of file"));
         assertThat(files.get(0).hunks().get(0).lines()).hasSize(2);
+    }
+
+    // --- Tolerance for headers a hand-written or generated diff gets wrong. ---
+    // Every one of these used to either lose findings silently or fail the
+    // whole submission with 422; the counts stay authoritative while they run,
+    // so none of this weakens the header-lookalike protection above.
+
+    @Test
+    void undercountedHunkStillYieldsEveryAddedLine() {
+        // "@@ -0,0 +1,1 @@" followed by three added lines. The old parser left
+        // the loop after the first one and swallowed the rest as junk: the job
+        // finished "done" and two findings had quietly disappeared.
+        List<DiffFile> files = UnifiedDiffParser.parse(diff(
+                "--- a/src/db.ts", "+++ b/src/db.ts", "@@ -0,0 +1,1 @@",
+                "+console.log(1);", "+// TODO fix", "+eval(x);"));
+        assertThat(files).hasSize(1);
+        assertThat(files.get(0).hunks().get(0).lines())
+                .extracting(DiffLine::content)
+                .containsExactly("console.log(1);", "// TODO fix", "eval(x);");
+        assertThat(files.get(0).hunks().get(0).lines())
+                .extracting(DiffLine::newLineNumber).containsExactly(1, 2, 3);
+    }
+
+    @Test
+    void undercountedHunkStopsAtTheNextFileSection() {
+        List<DiffFile> files = UnifiedDiffParser.parse(diff(
+                "--- a/one.js", "+++ b/one.js", "@@ -0,0 +1,1 @@", "+a", "+b",
+                "--- a/two.js", "+++ b/two.js", "@@ -0,0 +1,1 @@", "+c"));
+        assertThat(files).extracting(DiffFile::path).containsExactly("one.js", "two.js");
+        assertThat(files.get(0).hunks().get(0).lines())
+                .extracting(DiffLine::content).containsExactly("a", "b");
+        assertThat(files.get(1).hunks().get(0).lines())
+                .extracting(DiffLine::content).containsExactly("c");
+    }
+
+    @Test
+    void overcountedHunkEndsCleanlyAtTheNextHunkHeader() {
+        List<DiffFile> files = UnifiedDiffParser.parse(diff(
+                "--- a/x.js", "+++ b/x.js",
+                "@@ -0,0 +1,5 @@", "+a", "+b",
+                "@@ -10,0 +20,1 @@", "+c"));
+        assertThat(files).hasSize(1);
+        assertThat(files.get(0).hunks()).hasSize(2);
+        assertThat(files.get(0).hunks().get(0).lines())
+                .extracting(DiffLine::content).containsExactly("a", "b");
+        assertThat(files.get(0).hunks().get(1).lines().get(0).newLineNumber()).isEqualTo(20);
+    }
+
+    @Test
+    void gitHeaderSuppliesThePathWhenTheMinusPlusPairIsMissing() {
+        // A generated diff that keeps "diff --git" but drops ---/+++ is common
+        // enough that failing it costs more than trusting the git header.
+        List<DiffFile> files = UnifiedDiffParser.parse(diff(
+                "diff --git a/src/db.ts b/src/db.ts",
+                "index 111..222 100644",
+                "@@ -0,0 +1,1 @@",
+                "+eval(userInput);"));
+        assertThat(files).hasSize(1);
+        assertThat(files.get(0).path()).isEqualTo("src/db.ts");
+        assertThat(files.get(0).hunks().get(0).lines().get(0).newLineNumber()).isEqualTo(1);
+    }
+
+    @Test
+    void aLonePlusHeaderIsAcceptedAsTheNewPath() {
+        List<DiffFile> files = UnifiedDiffParser.parse(diff(
+                "+++ b/src/db.ts", "@@ -0,0 +1,1 @@", "+eval(x);"));
+        assertThat(files).hasSize(1);
+        assertThat(files.get(0).path()).isEqualTo("src/db.ts");
+    }
+
+    @Test
+    void theMinusPlusPairStillWinsOverTheGitHeader() {
+        List<DiffFile> files = UnifiedDiffParser.parse(diff(
+                "diff --git a/stale/path.ts b/stale/path.ts",
+                "--- a/real/path.ts", "+++ b/real/path.ts",
+                "@@ -0,0 +1,1 @@", "+x"));
+        assertThat(files.get(0).path()).isEqualTo("real/path.ts");
+    }
+
+    @Test
+    void toleranceDoesNotTurnPlainTextIntoADiff() {
+        // The relaxations above only apply once a file section and a hunk
+        // header exist; anything short of that is still not a unified diff.
+        assertThatThrownBy(() -> UnifiedDiffParser.parse(diff("just some prose", "with two lines")))
+                .isInstanceOf(DiffParseException.class);
+        assertThatThrownBy(() -> UnifiedDiffParser.parse(diff("--- a/x.js", "+++ b/x.js")))
+                .isInstanceOf(DiffParseException.class);
+        assertThatThrownBy(() -> UnifiedDiffParser.parse(diff("diff --git a/x.js b/x.js", "index 1..2")))
+                .isInstanceOf(DiffParseException.class);
     }
 }
