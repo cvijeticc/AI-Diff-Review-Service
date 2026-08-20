@@ -13,7 +13,7 @@
 
     <groupId>com.cvijeticc</groupId>
     <artifactId>diff-review-service</artifactId>
-    <version>1.0.3</version>
+    <version>1.1.0</version>
     <name>diff-review-service</name>
     <description>AI Diff Review Service - async unified-diff review with mock and llm providers</description>
 
