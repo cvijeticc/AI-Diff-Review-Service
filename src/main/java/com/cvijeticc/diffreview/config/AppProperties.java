@@ -23,6 +23,14 @@ public record AppProperties(
         long mockDelayMs,
         Llm llm
 ) {
-    public record Llm(String apiKey, String baseUrl, String model, long timeoutMs, int maxTokens) {
+    /**
+     * reasoningEffort is sent only when non-blank. A reasoning model spends its
+     * reasoning phase before the first output token, which is what pushes a call
+     * past the timeout; capping it is the lever that keeps latency bounded.
+     * Blank disables the parameter entirely, because a non-reasoning model
+     * behind LLM_BASE_URL rejects it with HTTP 400.
+     */
+    public record Llm(String apiKey, String baseUrl, String model, long timeoutMs, int maxTokens,
+                      String reasoningEffort) {
     }
 }

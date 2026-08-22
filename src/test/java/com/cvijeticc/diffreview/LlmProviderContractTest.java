@@ -35,7 +35,8 @@ import org.springframework.test.context.TestPropertySource;
         "app.llm.api-key=stub-key",
         "app.llm.timeout-ms=5000",
         "app.llm.model=gpt-5-mini",
-        "app.llm.max-tokens=16000"})
+        "app.llm.max-tokens=16000",
+        "app.llm.reasoning-effort=low"})
 class LlmProviderContractTest extends BaseApiTest {
 
     private static HttpServer stub;
@@ -130,6 +131,11 @@ class LlmProviderContractTest extends BaseApiTest {
         // locally - exactly the failure a stub exists to catch.
         assertThat(sent.path("max_completion_tokens").asInt()).isEqualTo(16_000);
         assertThat(sent.has("max_tokens")).isFalse();
+
+        // The reasoning phase is what pushes a call past the timeout, so the cap
+        // has to actually reach the API - a dropped parameter looks identical
+        // locally and only shows up as a timeout in production.
+        assertThat(sent.path("reasoning_effort").asText()).isEqualTo("low");
 
         // The API is asked to enforce the shape rather than the parser hoping for it.
         assertThat(sent.path("response_format").path("type").asText()).isEqualTo("json_schema");
