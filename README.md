@@ -81,7 +81,7 @@ the limit engages, then hold the sustained rate and require zero refusals.
 ### Verifying a running instance
 
 `postman/` holds a conformance suite that asserts the same contract against a
-deployed service — 31 requests, 85 assertions, no import required:
+deployed service — 32 requests, 85 assertions, no import required:
 
 ```bash
 npx newman run postman/AI-Diff-Review-Service.postman_collection.json --env-var baseUrl=http://localhost:8080 --env-var token=YOUR_TOKEN

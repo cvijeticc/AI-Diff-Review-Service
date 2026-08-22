@@ -1,7 +1,7 @@
 # Postman conformance suite
 
 `AI-Diff-Review-Service.postman_collection.json` is an executable verification of the
-API contract — 31 requests, 85 assertions, run in order against a live instance.
+API contract — 32 requests, 85 assertions, run in order against a live instance.
 
 It is not a set of sample calls: every cross-cutting behaviour the contract specifies is
 asserted, including the ones that cannot be seen from a single request.
@@ -68,7 +68,7 @@ over real time through the full HTTP stack), `RateLimitTest` and `ConcurrencyTes
 
 ## Design notes
 
-- **Re-runnable.** Cache and idempotency steps generate run-unique payloads, so a second run
+- **Re-runnable.** Cache, idempotency and `llm` steps generate run-unique payloads, so a second run
   is not polluted by the first run's cache entries and idempotency keys.
 - **Safe on a cold service.** Result reads poll until the job is terminal instead of assuming
   it finished, so the suite passes even on a just-started instance.
