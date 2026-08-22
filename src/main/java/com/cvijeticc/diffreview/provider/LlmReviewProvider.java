@@ -123,6 +123,14 @@ public class LlmReviewProvider implements ReviewProvider {
         // A chunk runs up to chunkBytes, so the findings array for it can be
         // long; too small a ceiling truncates the JSON and fails the job.
         body.put("max_completion_tokens", props.llm().maxTokens());
+        // The reasoning phase runs before the first output token and is the main
+        // driver of end-to-end latency, so it is capped rather than left to the
+        // model's default. Only sent when configured: a non-reasoning model
+        // behind LLM_BASE_URL rejects an unknown parameter with HTTP 400.
+        String effort = props.llm().reasoningEffort();
+        if (effort != null && !effort.isBlank()) {
+            body.put("reasoning_effort", effort);
+        }
         body.set("response_format", mapper.readTree(RESPONSE_SCHEMA));
         ArrayNode messages = body.putArray("messages");
         ObjectNode system = messages.addObject();

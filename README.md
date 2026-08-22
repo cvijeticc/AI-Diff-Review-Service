@@ -103,7 +103,8 @@ configured on the server. See [postman/README.md](postman/README.md).
 | `OPENAI_API_KEY` | *(empty)* | enables the `llm` provider; without it llm jobs fail gracefully |
 | `LLM_MODEL` | `gpt-5-mini` | model id for the llm provider |
 | `LLM_BASE_URL` | `https://api.openai.com` | LLM API base URL; any OpenAI-compatible endpoint works |
-| `LLM_TIMEOUT_MS` | `60000` | per-request LLM timeout; a reasoning model reasons before its first output token, so 20s is too short |
+| `LLM_TIMEOUT_MS` | `120000` | per-request LLM timeout; measured, a 6.9 KB diff blew a 60s budget three times running |
+| `LLM_REASONING_EFFORT` | `low` | caps the reasoning phase (`minimal`/`low`/`medium`/`high`); blank omits it for non-reasoning models |
 | `LLM_MAX_TOKENS` | `16000` | output ceiling for a model reply; a chunk's findings array can be long |
 | `MOCK_DELAY_MS` | `0` | artificial per-job delay; used by tests to observe concurrency/live SSE |
 

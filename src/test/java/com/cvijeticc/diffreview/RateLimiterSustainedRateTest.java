@@ -32,7 +32,7 @@ class RateLimiterSustainedRateTest {
     private static AppProperties props(int perMinute, int burst) {
         return new AppProperties("1.0.3", "t", 1_048_576, 65_536, 4, perMinute, burst, 4,
                 86_400, 604_800, 10_000, 0,
-                new AppProperties.Llm("", "http://127.0.0.1:1", "gpt-5-mini", 1000, 16_000));
+                new AppProperties.Llm("", "http://127.0.0.1:1", "gpt-5-mini", 1000, 16_000, "low"));
     }
 
     private void advanceMillis(long millis) {
