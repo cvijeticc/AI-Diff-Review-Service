@@ -1132,7 +1132,7 @@
     },
     {
       "name": "25 · llm provider — submit",
-      "description": "Routes the same pipeline through the real-model path. Credentials live only in server-side environment variables; the client never sends a model key — only the service bearer token.",
+      "description": "Routes the same pipeline through the real-model path. Credentials live only in server-side environment variables; the client never sends a model key — only the service bearer token.\n\nThe diff carries a per-run marker so this is always a fresh model call, never a cache replay - see the pre-request script.",
       "request": {
         "method": "POST",
         "header": [
@@ -1148,11 +1148,24 @@
               "language": "json"
             }
           },
-          "raw": "{\n  \"diff\": \"--- a/src/hook.js\\n+++ b/src/hook.js\\n@@ -0,0 +1,2 @@\\n+const raw = req.body.payload;\\n+return eval(raw);\\n\",\n  \"options\": {\n    \"provider\": \"llm\"\n  }\n}"
+          "raw": "{\n  \"diff\": \"--- a/src/hook.js\\n+++ b/src/hook.js\\n@@ -0,0 +1,3 @@\\n+const raw = req.body.payload;\\n+return eval(raw);\\n+const trace = \\\"{{llmBust}}\\\";\\n\",\n  \"options\": {\n    \"provider\": \"llm\"\n  }\n}"
         },
         "url": "{{baseUrl}}/v1/reviews"
       },
       "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The service caches results by {diff, options} for days, so a fixed diff",
+              "// would let step 27 pass from cache without ever calling the model - the",
+              "// exact 'green suite hides an unconfigured provider' failure that step is",
+              "// written to catch. A per-run marker forces a real call every time.",
+              "pm.collectionVariables.set('llmBust', 'run-' + Date.now());"
+            ]
+          }
+        },
         {
           "listen": "test",
           "script": {
@@ -1168,6 +1181,20 @@
           }
         }
       ]
+    },
+    {
+      "name": "25b · llm provider — wait for the model to answer",
+      "description": "A synchronisation step, deliberately carrying no assertions of its own: the assertion count is the headline number of this suite and this step must not inflate it.\n\nSteps 26 and 27 poll the job, and polling is a race. It only ever passed because an unconfigured `llm` provider failed in well under a second; once the provider genuinely works a real model call takes seconds to tens of seconds, and the poll budget runs out while the job is still `running`. Raising the budget is not the fix either - the loop has no delay between iterations, so a budget large enough to cover a model call would spend it in a couple of seconds and trip the rate limiter this same suite asserts on.\n\nStreaming the job instead blocks for exactly as long as the job needs and not a millisecond longer, adds no extra requests, and is bounded: the stream closes when the job reaches a terminal state, which `LLM_TIMEOUT_MS` guarantees happens. Steps 26 and 27 then read an already-terminal job on their first GET, and their poll loops stay in place as a fallback.",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "text/event-stream"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/reviews/{{jobLlm}}/stream"
+      }
     },
     {
       "name": "26 · llm provider — graceful degradation",
